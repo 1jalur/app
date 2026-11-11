@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Diagnosa · JALUR</title>
+<link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="img/favicon-192.png">
+<link rel="shortcut icon" href="favicon.ico">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<style>
+:root{--bg:#eaf0fb;--cd:#fff;--tx:#14213d;--mu:#63708c;--bd:#d6dff0;--ac:#0f2a66;--ok:#17803d;--wr:#b45309;--er:#d93a3a}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1226;--cd:#121c38;--tx:#e8eefc;--mu:#9fb0d3;--bd:#24325a;--ac:#8fb0ff;--ok:#4ade80;--wr:#fbbf24;--er:#f87171}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:22px}
+.w{max-width:880px;margin:auto}h1{font-size:22px;margin:0 0 4px;display:flex;gap:10px;align-items:center}h1 img{width:34px;height:34px;border-radius:9px}
+.sub{color:var(--mu);margin:0 0 16px}.card{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:6px 16px;margin-bottom:14px}
+.r{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--bd)}.r:last-child{border:0}.ic{width:22px;flex:none;text-align:center}
+.r b{display:block}.r span{color:var(--mu);font-size:13px;word-break:break-word}.ok .ic{color:var(--ok)}.wr .ic{color:var(--wr)}.er .ic{color:var(--er)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}button{font:inherit;border:0;border-radius:10px;padding:9px 14px;background:var(--ac);color:#fff;cursor:pointer}
+@media(prefers-color-scheme:dark){button{color:#0b1226}}button.g{background:transparent;color:var(--ac);border:1px solid var(--bd)}
+.lt{display:flex;gap:8px;flex-wrap:wrap;padding:12px 0}.lt input{flex:1;min-width:140px;padding:9px 11px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font:inherit}
+#sum{font-weight:700;margin:0 0 10px}a{color:var(--ac)}
+</style>
+</head>
+<body>
+<div class="w">
+  <h1><img src="img/logo.jpg" alt="">Diagnosa JALUR</h1>
+  <p class="sub">Memeriksa berkas, konfigurasi, penyimpanan browser, dan koneksi ke Google Apps Script. Tidak menampilkan password atau token. · <a href="index.html">Kembali ke aplikasi</a></p>
+  <div class="bar"><button id="run">Jalankan ulang</button><button class="g" id="copy">Salin laporan</button><button class="g" id="clr">Hapus cache lokal</button></div>
+  <p id="sum"></p>
+  <div class="card" id="res"></div>
+  <div class="card"><div class="lt"><input id="tu" placeholder="Username (uji login)" autocomplete="off"><input id="tp" type="password" placeholder="Password" autocomplete="off"><button id="tl">Uji login</button></div><div id="tr" style="padding-bottom:10px;color:var(--mu);font-size:13px">Uji login hanya memastikan username/password diterima server, lalu langsung keluar lagi.</div></div>
+</div>
+<script src="js/config.js"></script>
+<script>
+(function(){
+  var C=window.JALUR_CONFIG||{},$=function(i){return document.getElementById(i)},rows=[];
+  var FILES=["index.html","css/style.css","js/config.js","js/app.js","js/auth.js","img/logo.jpg"];
+  var ICON={ok:"✅",wr:"⚠️",er:"❌"};
+  function add(st,t,d){rows.push({st:st,t:t,d:d})}
+  function show(){
+    var c={ok:0,wr:0,er:0};rows.forEach(function(r){c[r.st]++});
+    $("sum").textContent=c.er?("Ada "+c.er+" masalah yang perlu diperbaiki"+(c.wr?", "+c.wr+" peringatan":"")+"."):c.wr?("Tidak ada error, "+c.wr+" peringatan."):"Semua pemeriksaan lulus.";
+    $("res").innerHTML=rows.map(function(r){return '<div class="r '+r.st+'"><div class="ic">'+ICON[r.st]+'</div><div><b></b><span></span></div></div>'}).join("");
+    var b=$("res").querySelectorAll("b"),s=$("res").querySelectorAll("span");rows.forEach(function(r,i){b[i].textContent=r.t;s[i].textContent=r.d});
+  }
+  function kb(n){return (n/1024).toFixed(1)+" KB"}
+  async function run(){
+    rows=[];$("sum").textContent="Memeriksa…";
+    // 1 lingkungan
+    var p=location.protocol;
+    if(p==="file:")add("wr","Cara membuka","Dibuka lewat file:// — pemeriksaan berkas & koneksi server bisa gagal. Buka lewat Vercel atau server lokal.");
+    else add(p==="https:"||location.hostname==="localhost"?"ok":"wr","Cara membuka",location.origin+(p==="http:"&&location.hostname!=="localhost"?" (sebaiknya HTTPS)":""));
+    // 2 config
+    if(!window.JALUR_CONFIG)add("er","Konfigurasi","js/config.js tidak termuat / tidak ada window.JALUR_CONFIG.");
+    else add("ok","Konfigurasi","js/config.js termuat. LOCAL_MODE = "+!!C.LOCAL_MODE+", AUTOSAVE_MS = "+(C.AUTOSAVE_MS||"-"));
+    // 3 GAS_URL
+    var url=C.GAS_URL||"",fmtOk=/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url);
+    if(C.LOCAL_MODE)add("wr","Mode lokal","LOCAL_MODE aktif: TANPA login dan TANPA sinkron server. Matikan sebelum dipakai tim.");
+    if(!url)add(C.LOCAL_MODE?"wr":"er","GAS_URL","Belum diisi di js/config.js.");
+    else add(fmtOk?"ok":"wr","GAS_URL",fmtOk?"Format benar (…/exec).":"Format tidak biasa. Pastikan memakai URL Web App yang berakhiran /exec, bukan /dev.");
+    // 4 berkas
+    for(var i=0;i<FILES.length;i++){
+      try{var r=await fetch(FILES[i]+"?d="+Date.now(),{cache:"no-store"});
+        if(!r.ok)add("er","Berkas "+FILES[i],"HTTP "+r.status+" — berkas tidak ditemukan / belum ter-upload.");
+        else{var b=await r.blob();add(b.size?"ok":"er","Berkas "+FILES[i],kb(b.size))}
+      }catch(e){add("er","Berkas "+FILES[i],"Gagal dibaca ("+(p==="file:"?"karena file://":e.message)+")")}
+    }
+    // 5 storage
+    try{localStorage.setItem("__dx","1");localStorage.removeItem("__dx");
+      var raw=localStorage.getItem("crm1");
+      if(!raw)add("wr","Penyimpanan browser","Bisa dipakai. Belum ada data (crm1) — normal sebelum login pertama.");
+      else{var d=JSON.parse(raw),ks=Object.keys(d).filter(function(k){return Array.isArray(d[k])}).map(function(k){return k+":"+d[k].length}).join(", ");add("ok","Penyimpanan browser","Data lokal "+kb(raw.length)+" · "+ks)}
+    }catch(e){add("er","Penyimpanan browser","Tidak bisa dipakai ("+e.message+"). Matikan mode privat / izinkan penyimpanan situs.")}
+    // 6 sesi
+    try{var s=JSON.parse(sessionStorage.getItem("jalur_session"));add(s?"ok":"wr","Sesi login",s?("Masuk sebagai "+s.nama+" ("+s.role+")"):"Belum login di tab ini.")}catch(e){add("wr","Sesi login","Belum login di tab ini.")}
+    // 7 ping server
+    if(fmtOk||url){
+      var t0=performance.now();
+      try{var j=await (await fetch(url+"?action=ping&d="+Date.now(),{redirect:"follow"})).json(),ms=Math.round(performance.now()-t0);
+        if(!j.ok)add("er","Server GAS","Menjawab tetapi ok=false: "+(j.error||"-"));
+        else{add("ok","Server GAS","Terhubung ("+ms+" ms) · "+j.app+" v"+j.version);
+          add(j.users>0?"ok":"er","Pengguna di sheet Users",j.users>0?(j.users+" pengguna terdaftar"):(j.users===-1?"Sheet Users tidak bisa dibaca — script harus dibuat dari Extensions ▸ Apps Script pada Google Sheet.":"Belum ada pengguna. Jalankan setupUsers() di editor Apps Script."));
+          add(j.dataFile?"ok":"wr","File data di Drive",j.dataFile?"jalur-crm-data.json ada.":"Belum ada — akan dibuat saat admin pertama kali menyimpan.")}
+      }catch(e){add("er","Server GAS","Tidak terhubung: "+e.message+". Cek: Deploy ▸ Web app ▸ akses 'Siapa saja', dan URL berakhiran /exec. Setelah mengubah kode, buat deployment versi baru.")}
+    }
+    show();
+  }
+  $("run").onclick=run;
+  $("copy").onclick=function(){var t="Diagnosa JALUR · "+new Date().toLocaleString("id-ID")+"\n"+rows.map(function(r){return "["+r.st.toUpperCase()+"] "+r.t+": "+r.d}).join("\n");navigator.clipboard.writeText(t).then(function(){$("copy").textContent="Tersalin ✓";setTimeout(function(){$("copy").textContent="Salin laporan"},1500)})};
+  $("clr").onclick=function(){if(confirm("Hapus data cache lokal (crm1) dan sesi di browser ini?\nData yang sudah tersinkron ke server tidak terhapus.")){localStorage.removeItem("crm1");sessionStorage.removeItem("jalur_session");run()}};
+  $("tl").onclick=async function(){
+    var o=$("tr");o.textContent="Menguji…";
+    try{var post=function(b){return fetch(url,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(b)}).then(function(r){return r.json()})};
+      var j=await post({action:"login",username:$("tu").value.trim(),password:$("tp").value});
+      if(j.ok){await post({action:"logout",token:j.token});o.textContent="✅ Login berhasil sebagai "+j.nama+" ("+j.role+"). Sesi uji sudah ditutup."}
+      else o.textContent="❌ "+j.error;
+    }catch(e){o.textContent="❌ Tidak terhubung: "+e.message}
+    $("tp").value="";
+  };
+  run();
+})();
+</script>
+</body>
+</html>
