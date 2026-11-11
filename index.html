@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>JALUR</title>
+<link rel="icon" href="img/logo.jpg">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<button id="mb">☰</button><aside id="sd"></aside><main id="mn"></main><div id="pr"></div>
+
+<div id="login">
+  <form class="lc" id="lf" autocomplete="on">
+    <div class="lh"><img src="img/logo.jpg" alt="Logo"><div><b>JALUR</b><span>Produksi Manufactur</span></div></div>
+    <p>Masuk sebagai <b>Admin</b> atau <b>Staff</b> untuk membuka aplikasi.</p>
+    <label>Username<input id="lu" name="username" autocomplete="username" autocapitalize="none" required></label>
+    <label>Password<input id="lp" name="password" type="password" autocomplete="current-password" required></label>
+    <div class="er" id="lerr"></div>
+    <button id="lb" type="submit">Masuk</button>
+    <p class="ft"><a href="diagnosa.html">Diagnosa koneksi</a></p>
+  </form>
+</div>
+<div id="who" hidden><span><b id="wtxt"></b><br><small id="wstat"></small></span><button id="wout" type="button">Keluar</button></div>
+
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script src="js/auth.js"></script>
+</body>
+</html>
