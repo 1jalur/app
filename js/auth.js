@@ -1,146 +1,192 @@
-/**
- * JALUR – Akses masuk ADMIN & STAFF  (file: Auth.gs)
- *
- * Pengguna disimpan di sheet "Users" pada Google Sheet tempat script ini terpasang:
- *   A username | B nama | C role (admin/staff) | D password_baru | E password_hash | F aktif
- * Password TIDAK disimpan polos: hanya hash SHA-256 + garam rahasia (Script Properties).
- *
- * Cara kelola pengguna (tanpa mengubah kode):
- *   1. Jalankan setupUsers() sekali  → membuat user "admin" & "staff" dengan password acak (lihat Log eksekusi).
- *   2. Tambah/ubah user langsung di sheet Users: isi kolom D (password_baru) lalu
- *      menu "JALUR ▸ Terapkan password baru". Kolom D otomatis dikosongkan.
- *   3. Nonaktifkan user: ubah kolom F menjadi FALSE.
- */
-
-const AUTH = {
-  SHEET: "Users",
-  TTL: 21600,        // sesi login 6 jam (maksimum CacheService)
-  MAX_FAIL: 5,       // gagal login berturut-turut sebelum dikunci
-  LOCK_SEC: 600,     // lama kunci 10 menit
-  MIN_PW: 8
-};
-
-/** Menu di Google Sheet. */
-function onOpen() {
-  try {
-    SpreadsheetApp.getUi().createMenu("JALUR")
-      .addItem("Buat user awal (admin & staff)", "setupUsers")
-      .addItem("Terapkan password baru", "terapkanPasswordBaru")
-      .addToUi();
-  } catch (e) {}
-}
-
-/* ---------- Penyimpanan pengguna ---------- */
-
-function ss_() {
-  const id = PropertiesService.getScriptProperties().getProperty("SS_ID"); // opsional bila script berdiri sendiri
-  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-}
-function sheet_() {
-  const ss = ss_();
-  let sh = ss.getSheetByName(AUTH.SHEET);
-  if (!sh) {
-    sh = ss.insertSheet(AUTH.SHEET);
-    sh.appendRow(["username", "nama", "role", "password_baru", "password_hash", "aktif"]);
-    sh.setFrozenRows(1);
-    sh.getRange("D1").setNote("Isi password baru (min. 8 karakter), lalu menu JALUR > Terapkan password baru. Kolom ini otomatis dikosongkan.");
+/* ============ AKSES MASUK: ADMIN & STAFF + SINKRON KE GOOGLE APPS SCRIPT ============ */
+(function () {
+  "use strict";
+  var C = window.JALUR_CONFIG || {}, SK = "jalur_session";
+  var $ = function (id) { return document.getElementById(id); };
+  // Menu yang boleh dibuka staff (id menu di sidebar). Admin boleh semuanya.
+  // Staff HANYA MELIHAT (tidak bisa menambah/mengubah/menghapus) di semua menu ini.
+  var STAFF_MENU = ["dashboard", "stok", "absensi", "timeline", "projects", "rapawal", "rap", "belanja",
+                    "material", "jasa", "oper", "sop", "qc"];
+  // Kunci data yang HARUS ada agar aplikasi tidak error (daftar = array, OBJ = objek)
+  var ARR = ["projects", "rap", "material", "input", "output", "adj", "tim", "tlc", "tlp", "keg", "lem", "qc",
+             "jasa", "oper", "investasi", "sop", "sj", "pengajuan", "rapa", "rapf", "spfl"];
+  var OBJ = ["abs", "spt"];
+  function lengkapi(d) {
+    ARR.forEach(function (k) { if (!Array.isArray(d[k])) d[k] = []; });
+    OBJ.forEach(function (k) { if (!d[k] || typeof d[k] !== "object" || Array.isArray(d[k])) d[k] = {}; });
+    return d;
   }
-  return sh;
-}
-function salt_() {
-  const p = PropertiesService.getScriptProperties();
-  let s = p.getProperty("AUTH_SALT");
-  if (!s) { s = Utilities.getUuid() + Utilities.getUuid(); p.setProperty("AUTH_SALT", s); }
-  return s;
-}
-function hash_(pw) {
-  const raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt_() + ":" + pw, Utilities.Charset.UTF_8);
-  return "h$" + raw.map(function (b) { return ("0" + (b & 255).toString(16)).slice(-2); }).join(""); // awalan h$ agar tidak dibaca sebagai angka
-}
-function randomPw_() { return Utilities.getUuid().replace(/-/g, "").slice(0, 10); }
+  var sess = null, timer = null, dirty = false, busy = false, roleDone = false;
 
-function countUsers_() {
-  try {
-    const v = sheet_().getDataRange().getValues();
-    let n = 0;
-    for (let i = 1; i < v.length; i++) if (v[i][0] && v[i][4]) n++;
-    return n;
-  } catch (e) { return -1; }
-}
+  window.JALUR = {
+    onSave: function () {
+      if (!sess || C.LOCAL_MODE || sess.role === "staff") return;   // staff tidak pernah mengirim data ke server
+      dirty = true; stat("Menyimpan…");
+      clearTimeout(timer); timer = setTimeout(push, C.AUTOSAVE_MS || 2500);
+    },
+    get session() { return sess; },
+    token: function () { return Promise.resolve(sess && sess.token); }   // dipakai js/penawaran.js
+  };
 
-/* ---------- Dijalankan manual dari editor / menu Sheet ---------- */
+  function stat(t) { var e = $("wstat"); if (e) e.textContent = t; }
+  function showLogin(msg) { $("login").style.display = "flex"; $("who").hidden = true; $("lerr").textContent = msg || ""; setTimeout(function () { $("lu").focus(); }, 50); }
+  function hideLogin() { $("login").style.display = "none"; }
 
-function setupUsers() {
-  const sh = sheet_();
-  const rows = sh.getDataRange().getValues().slice(1);
-  const ada = function (u) { return rows.some(function (r) { return String(r[0]).trim().toLowerCase() === u; }); };
-  const dibuat = [];
-  [["admin", "Administrator", "admin"], ["staff", "Staff", "staff"]].forEach(function (d) {
-    if (ada(d[0])) return;
-    const pw = randomPw_();
-    sh.appendRow([d[0], d[1], d[2], "", hash_(pw), true]);
-    dibuat.push(d[0] + "  /  " + pw + "   (" + d[2] + ")");
+  function api(action, body) {
+    if (!C.GAS_URL) return Promise.reject(new Error("GAS_URL belum diisi di js/config.js"));
+    return fetch(C.GAS_URL, {
+      method: "POST", redirect: "follow",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(Object.assign({ action: action }, body || {}))
+    }).then(function (r) {
+      if (!r.ok) throw new Error("Server menjawab " + r.status);
+      return r.json();
+    });
+  }
+
+  function applyRole() {
+    if (roleDone) return; roleDone = true;
+    if (sess.role !== "staff") return;
+    applyReadOnly();
+    MENU.forEach(function (g) { g[1] = g[1].filter(function (i) { return STAFF_MENU.indexOf(i[0]) >= 0; }); });
+    for (var i = MENU.length - 1; i >= 0; i--) if (!MENU[i][1].length) MENU.splice(i, 1);
+    var _go = window.go;
+    window.go = function (id) { return _go(STAFF_MENU.indexOf(id) >= 0 ? id : STAFF_MENU[0]); };
+  }
+
+
+  // ===== MODE HANYA-LIHAT untuk staff =====
+  // Menyembunyikan form & tombol tambah/ubah/hapus, mengunci isian, dan memblokir klik yang mengubah data.
+  // Tombol "Cetak", tombol kembali (←), membuka folder, dan kolom pencarian tetap berfungsi.
+  function applyReadOnly() {
+    var st = document.createElement("style");
+    st.textContent = "body.ro #mn .box:has(.form){display:none!important}body.ro #mn button.ic{display:none!important}";
+    document.head.appendChild(st);
+    document.body.classList.add("ro");
+    var mn = $("mn"), KEEP = "[data-q],#qs,#mq,#spq,#mo,#pw,[data-tl=tls]";
+    function lock() {
+      mn.querySelectorAll("button").forEach(function (b) { if (!/Cetak|←/.test(b.textContent)) b.style.display = "none"; });
+      mn.querySelectorAll('[data-a="b"],[data-tl="b"],[data-spn],#nt,#tlnp').forEach(function (e) { e.style.display = "none"; });
+      mn.querySelectorAll("p").forEach(function (e) { if (/^Pilih warna/.test(e.textContent.trim())) e.style.display = "none"; });
+      mn.querySelectorAll("input,select,textarea").forEach(function (i) {
+        if (i.matches(KEEP)) return;
+        if (i.tagName === "TEXTAREA") { i.readOnly = true; i.placeholder = "Belum ada tulisan"; }
+        else if (i.tagName === "INPUT" && (i.type === "text" || i.type === "number")) i.readOnly = true;
+        else i.disabled = true;
+      });
+    }
+    new MutationObserver(lock).observe(mn, { childList: true, subtree: true });
+    lock();
+    var ACT = "[data-a],[data-tl],[data-qc],[data-sa],[data-ra],[data-fa],[data-ba],[data-sp],[data-spn],[data-spp],[data-mt],[data-sj],[data-pg],[data-e],[data-d]";
+    function guard(e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var bt = t.closest("button");
+      if (bt && /Cetak|←/.test(bt.textContent)) return;
+      if (t.closest('[data-ra="o"],[data-fa="o"],[data-ba="o"],[data-sp="o"],[data-tl="tg"]')) return;
+      var stop = e.type === "click" ? !!(bt || t.closest(ACT)) : !!t.closest('[data-tl="c"],[data-tl="cx"],[data-a="c"]');
+      if (stop) { e.stopImmediatePropagation(); e.preventDefault(); }
+    }
+    ["click", "mousedown", "mouseover", "dblclick"].forEach(function (n) { mn.addEventListener(n, guard, true); });
+  }
+
+  function startSession(s) {
+    sess = s;
+    try { sessionStorage.setItem(SK, JSON.stringify(s)); } catch (e) {}
+    applyRole();
+    $("wtxt").textContent = s.nama + " · " + (s.role === "admin" ? "Admin" : "Staff");
+    $("who").hidden = false;
+  }
+
+  function resetForms() {
+    try { Object.keys(MD).forEach(function (k) { MS[k] = { f: newMF(k), ei: -1, q: "" }; }); } catch (e) {}
+  }
+
+  function pull() {
+    return api("load", { token: sess.token }).then(function (j) {
+      if (!j.ok) { var er = new Error(j.error || "Gagal memuat data"); er.auth = j.code === "auth"; throw er; }
+      if (j.data) {
+        S = lengkapi(j.data);
+        try { localStorage.setItem("crm1", JSON.stringify(S)); } catch (e) {}
+        resetForms();
+        stat("Data dimuat dari server");
+      } else if (sess.role === "admin") {
+        // Server masih kosong
+        if (!confirm("Server masih kosong.\n\nOK = unggah data yang ada di browser ini ke server.\nBatal = mulai dengan data kosong.")) {
+          S = lengkapi({}); resetForms();
+        }
+        dirty = true; return push();
+      }
+    });
+  }
+
+  function push() {
+    if (!sess || busy || !dirty) return Promise.resolve();
+    busy = true; dirty = false;
+    return api("save", { token: sess.token, data: S }).then(function (j) {
+      if (!j.ok) { if (j.code === "auth") { dirty = true; expired(); return; } throw new Error(j.error); }
+      stat("Tersimpan ✓ " + new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
+    }).catch(function () {
+      dirty = true; stat("Gagal sinkron, dicoba lagi…");
+      clearTimeout(timer); timer = setTimeout(push, 15000);
+    }).then(function () { busy = false; });
+  }
+
+  function expired() {
+    sess = null; try { sessionStorage.removeItem(SK); } catch (e) {}
+    showLogin("Sesi habis, silakan masuk lagi.");
+  }
+
+  function enter() { hideLogin(); window.go("dashboard"); }
+
+  $("lf").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var b = $("lb"), u = $("lu").value.trim();
+    b.disabled = true; $("lerr").textContent = "";
+    api("login", { username: u, password: $("lp").value }).then(function (j) {
+      if (!j.ok) throw new Error(j.error || "Login gagal");
+      $("lp").value = "";
+      startSession({ token: j.token, role: j.role, nama: j.nama || u, u: u.toLowerCase() });
+      return dirty ? push().then(pull) : pull();
+    }).then(enter).catch(function (e) {
+      sess = null; try { sessionStorage.removeItem(SK); } catch (x) {}
+      $("who").hidden = true; $("lerr").textContent = e.message || "Gagal masuk";
+    }).then(function () { b.disabled = false; });
   });
-  Logger.log(dibuat.length
-    ? "USER AWAL DIBUAT. CATAT PASSWORD INI lalu segera ganti lewat kolom password_baru:\n" + dibuat.join("\n")
-    : "User admin & staff sudah ada. Tidak ada yang dibuat.");
-  return dibuat;
-}
 
-function terapkanPasswordBaru() {
-  const sh = sheet_(), v = sh.getDataRange().getValues();
-  let ok = 0, pendek = [];
-  for (let i = 1; i < v.length; i++) {
-    const pw = String(v[i][3] === undefined ? "" : v[i][3]).trim();
-    if (!pw) continue;
-    if (pw.length < AUTH.MIN_PW) { pendek.push(v[i][0]); continue; }
-    sh.getRange(i + 1, 5).setValue(hash_(pw));
-    sh.getRange(i + 1, 4).clearContent();
-    if (String(v[i][5]) === "") sh.getRange(i + 1, 6).setValue(true);
-    ok++;
+  $("wout").addEventListener("click", function () {
+    if (!sess) return;
+    var done = function () {
+      var t = sess && sess.token;
+      (t ? api("logout", { token: t }).catch(function () {}) : Promise.resolve()).then(function () {
+        try { sessionStorage.removeItem(SK); localStorage.removeItem("crm1"); } catch (e) {}
+        location.reload();
+      });
+    };
+    if (dirty) {
+      push().then(function () {
+        if (dirty && !confirm("Ada perubahan yang belum tersinkron ke server. Tetap keluar?")) return;
+        done();
+      });
+    } else done();
+  });
+
+  window.addEventListener("beforeunload", function (e) { if (dirty && sess) { e.preventDefault(); e.returnValue = ""; } });
+
+  // ===== Mulai =====
+  if (C.LOCAL_MODE) {
+    hideLogin(); sess = { role: "admin", nama: "Mode lokal", token: "" };
+    $("wtxt").textContent = "Mode lokal (tanpa server)"; $("who").hidden = false; $("wout").hidden = true;
+    return;
   }
-  const msg = ok + " password diperbarui." + (pendek.length ? " Dilewati (kurang dari " + AUTH.MIN_PW + " karakter): " + pendek.join(", ") : "");
-  Logger.log(msg);
-  try { SpreadsheetApp.getActive().toast(msg, "JALUR", 6); } catch (e) {}
-  return msg;
-}
-
-/* ---------- Dipanggil oleh Code.gs ---------- */
-
-function login_(username, password) {
-  const u = String(username || "").trim().toLowerCase();
-  if (!u || !password) return { ok: false, error: "Isi username dan password" };
-
-  const cache = CacheService.getScriptCache(), fk = "fail_" + u, fails = +(cache.get(fk) || 0);
-  if (fails >= AUTH.MAX_FAIL) return { ok: false, error: "Terlalu banyak percobaan. Coba lagi 10 menit lagi." };
-
-  const v = sheet_().getDataRange().getValues();
-  let row = null;
-  for (let i = 1; i < v.length; i++) {
-    if (String(v[i][0]).trim().toLowerCase() === u) { row = v[i]; break; }
+  var saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(SK)); } catch (e) {}
+  if (saved && saved.token) {
+    startSession(saved);
+    pull().then(enter).catch(function (e) {
+      if (e.auth) expired();
+      else { stat("Offline, memakai data di perangkat ini"); enter(); }
+    });
+  } else {
+    showLogin(C.GAS_URL ? "" : "Server belum disetel. Isi GAS_URL di js/config.js (lihat README).");
   }
-  const pwOk = !!row && !!row[4] && String(row[4]) === hash_(String(password));
-  const aktif = !!row && String(row[5]).toUpperCase() !== "FALSE";
-  if (!pwOk || !aktif) {
-    cache.put(fk, String(fails + 1), AUTH.LOCK_SEC);
-    return { ok: false, error: "Username atau password salah" };   // pesan sama untuk semua kasus
-  }
-  cache.remove(fk);
-  const role = String(row[2]).trim().toLowerCase() === "admin" ? "admin" : "staff";
-  const nama = row[1] || u;
-  const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, "");
-  cache.put("tok_" + token, JSON.stringify({ u: u, role: role, nama: nama }), AUTH.TTL);
-  return { ok: true, token: token, role: role, nama: nama, ttl: AUTH.TTL };
-}
-
-function session_(token) {
-  if (!token) return null;
-  const raw = CacheService.getScriptCache().get("tok_" + token);
-  return raw ? JSON.parse(raw) : null;
-}
-
-function logout_(token) {
-  if (token) CacheService.getScriptCache().remove("tok_" + token);
-  return { ok: true };
-}
-
+})();
