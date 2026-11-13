@@ -173,6 +173,12 @@
   window.addEventListener("beforeunload", function (e) { if (dirty && sess) { e.preventDefault(); e.returnValue = ""; } });
 
   // ===== Mulai =====
+  // Muat modul lampiran PDF (js/penawaran.js) bila index.html belum memuatnya
+  function muatPenawaran() {
+    if (document.querySelector('script[src*="penawaran.js"]')) return;
+    var pj = document.createElement("script"); pj.src = "js/penawaran.js"; document.body.appendChild(pj);
+  }
+  if (document.readyState === "complete") muatPenawaran(); else window.addEventListener("load", muatPenawaran);
   if (C.LOCAL_MODE) {
     hideLogin(); sess = { role: "admin", nama: "Mode lokal", token: "" };
     $("wtxt").textContent = "Mode lokal (tanpa server)"; $("who").hidden = false; $("wout").hidden = true;
