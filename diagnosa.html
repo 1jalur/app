@@ -36,7 +36,7 @@
 <script>
 (function(){
   var C=window.JALUR_CONFIG||{},$=function(i){return document.getElementById(i)},rows=[];
-  var FILES=["index.html","css/style.css","js/config.js","js/app.js","js/auth.js","img/logo.jpg"];
+  var FILES=["index.html","css/style.css","js/config.js","js/app.js","js/auth.js","js/penawaran.js","img/logo.jpg"];
   var ICON={ok:"✅",wr:"⚠️",er:"❌"};
   function add(st,t,d){rows.push({st:st,t:t,d:d})}
   function show(){
@@ -46,6 +46,27 @@
     var b=$("res").querySelectorAll("b"),s=$("res").querySelectorAll("span");rows.forEach(function(r,i){b[i].textContent=r.t;s[i].textContent=r.d});
   }
   function kb(n){return (n/1024).toFixed(1)+" KB"}
+  var SBU=(C.SUPABASE_URL||"").replace(/\/+$/,""),SBK=C.SUPABASE_ANON_KEY||"",useSB=!!(SBU&&SBK);
+  async function cekSB(){
+    var fmt=/^https:\/\/[a-z0-9]+\.supabase\.co$/.test(SBU);
+    add(fmt?"ok":"wr","SUPABASE_URL",fmt?SBU:"Format tidak biasa ("+SBU+"). Biasanya https://xxxx.supabase.co (tanpa garis miring di akhir).");
+    // kunci: tolak service_role / secret
+    var role="";try{role=JSON.parse(atob(SBK.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).role||""}catch(e){}
+    if(role==="service_role"||/^sb_secret_/.test(SBK))add("er","SUPABASE_ANON_KEY","Ini kunci RAHASIA (service_role/secret). SEGERA ganti dengan kunci anon/publishable — kunci rahasia tidak boleh ada di situs publik.");
+    else add("ok","SUPABASE_ANON_KEY",role==="anon"?"Kunci anon (aman untuk publik).":(/^sb_publishable_/.test(SBK)?"Kunci publishable (aman untuk publik).":"Terisi ("+SBK.length+" karakter)."));
+    var H={apikey:SBK},t0=performance.now();
+    try{
+      var r=await fetch(SBU+"/auth/v1/health",{headers:H}),ms=Math.round(performance.now()-t0);
+      add(r.ok?"ok":"er","Server Supabase (Auth)",r.ok?"Terhubung ("+ms+" ms).":"HTTP "+r.status+" — URL atau kunci salah, atau project sedang dijeda (paused).");
+      if(!r.ok)return;
+    }catch(e){add("er","Server Supabase (Auth)","Tidak terhubung: "+e.message);return}
+    try{
+      var d=await fetch(SBU+"/rest/v1/app_data?select=id&limit=1",{headers:H}),j=null;try{j=await d.json()}catch(e){}
+      if(d.status===404||(j&&j.code==="PGRST205"))add("er","Tabel app_data","Belum ada. Jalankan supabase/schema.sql di SQL Editor Supabase.");
+      else if(d.ok&&Array.isArray(j)&&j.length)add("er","Keamanan data","DATA TERBUKA UNTUK PUBLIK tanpa login! Jalankan ulang supabase/schema.sql (bagian Row Level Security).");
+      else add("ok","Keamanan data","Pengunjung tanpa login tidak bisa membaca data (RLS aktif).");
+    }catch(e){add("wr","Keamanan data","Tidak bisa diperiksa: "+e.message)}
+  }
   async function run(){
     rows=[];$("sum").textContent="Memeriksa…";
     // 1 lingkungan
@@ -54,11 +75,12 @@
     else add(p==="https:"||location.hostname==="localhost"?"ok":"wr","Cara membuka",location.origin+(p==="http:"&&location.hostname!=="localhost"?" (sebaiknya HTTPS)":""));
     // 2 config
     if(!window.JALUR_CONFIG)add("er","Konfigurasi","js/config.js tidak termuat / tidak ada window.JALUR_CONFIG.");
-    else add("ok","Konfigurasi","js/config.js termuat. LOCAL_MODE = "+!!C.LOCAL_MODE+", AUTOSAVE_MS = "+(C.AUTOSAVE_MS||"-"));
+    else add("ok","Konfigurasi","js/config.js termuat. Backend = "+(useSB?"Supabase":(C.GAS_URL?"Google Apps Script":"-"))+", LOCAL_MODE = "+!!C.LOCAL_MODE+", AUTOSAVE_MS = "+(C.AUTOSAVE_MS||"-"));
     // 3 GAS_URL
     var url=C.GAS_URL||"",fmtOk=/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url);
     if(C.LOCAL_MODE)add("wr","Mode lokal","LOCAL_MODE aktif: TANPA login dan TANPA sinkron server. Matikan sebelum dipakai tim.");
-    if(!url)add(C.LOCAL_MODE?"wr":"er","GAS_URL","Belum diisi di js/config.js.");
+    if(useSB)await cekSB();
+    else if(!url)add(C.LOCAL_MODE?"wr":"er","Backend data","Belum ada backend: isi SUPABASE_URL + SUPABASE_ANON_KEY (atau GAS_URL) di js/config.js.");
     else add(fmtOk?"ok":"wr","GAS_URL",fmtOk?"Format benar (…/exec).":"Format tidak biasa. Pastikan memakai URL Web App yang berakhiran /exec, bukan /dev.");
     // 4 berkas
     for(var i=0;i<FILES.length;i++){
@@ -76,7 +98,7 @@
     // 6 sesi
     try{var s=JSON.parse(sessionStorage.getItem("jalur_session"));add(s?"ok":"wr","Sesi login",s?("Masuk sebagai "+s.nama+" ("+s.role+")"):"Belum login di tab ini.")}catch(e){add("wr","Sesi login","Belum login di tab ini.")}
     // 7 ping server
-    if(fmtOk||url){
+    if(!useSB&&(fmtOk||url)){
       var t0=performance.now();
       try{var j=await (await fetch(url+"?action=ping&d="+Date.now(),{redirect:"follow"})).json(),ms=Math.round(performance.now()-t0);
         if(!j.ok)add("er","Server GAS","Menjawab tetapi ok=false: "+(j.error||"-"));
@@ -92,10 +114,25 @@
   $("clr").onclick=function(){if(confirm("Hapus data cache lokal (crm1) dan sesi di browser ini?\nData yang sudah tersinkron ke server tidak terhapus.")){localStorage.removeItem("crm1");sessionStorage.removeItem("jalur_session");run()}};
   $("tl").onclick=async function(){
     var o=$("tr");o.textContent="Menguji…";
-    try{var post=function(b){return fetch(url,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(b)}).then(function(r){return r.json()})};
-      var j=await post({action:"login",username:$("tu").value.trim(),password:$("tp").value});
-      if(j.ok){await post({action:"logout",token:j.token});o.textContent="✅ Login berhasil sebagai "+j.nama+" ("+j.role+"). Sesi uji sudah ditutup."}
-      else o.textContent="❌ "+j.error;
+    try{
+      if(useSB){
+        var u=$("tu").value.trim().toLowerCase(),em=u.indexOf("@")>=0?u:u+"@"+(C.USER_DOMAIN||"jalurmanufactur.vercel.app");
+        var r=await fetch(SBU+"/auth/v1/token?grant_type=password",{method:"POST",headers:{apikey:SBK,"Content-Type":"application/json"},body:JSON.stringify({email:em,password:$("tp").value})});
+        var j=await r.json();
+        if(!r.ok||!j.access_token)o.textContent="❌ "+(r.status===400?"Username atau password salah (email yang dicoba: "+em+")":"Gagal, HTTP "+r.status);
+        else{
+          var HA={apikey:SBK,Authorization:"Bearer "+j.access_token};
+          var p=await (await fetch(SBU+"/rest/v1/profiles?id=eq."+j.user.id+"&select=nama,role,aktif",{headers:HA})).json();
+          await fetch(SBU+"/auth/v1/logout?scope=local",{method:"POST",headers:HA});
+          var row=Array.isArray(p)&&p[0];
+          o.textContent=!row?"⚠️ Password benar, tetapi akun belum terdaftar di tabel profiles (jalankan supabase/setup-users.sql).":row.aktif===false?"⚠️ Password benar, tetapi akun dinonaktifkan.":"✅ Login berhasil sebagai "+row.nama+" ("+row.role+"). Sesi uji sudah ditutup.";
+        }
+      }else{
+        var post=function(b){return fetch(url,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(b)}).then(function(r){return r.json()})};
+        var g=await post({action:"login",username:$("tu").value.trim(),password:$("tp").value});
+        if(g.ok){await post({action:"logout",token:g.token});o.textContent="✅ Login berhasil sebagai "+g.nama+" ("+g.role+"). Sesi uji sudah ditutup."}
+        else o.textContent="❌ "+g.error;
+      }
     }catch(e){o.textContent="❌ Tidak terhubung: "+e.message}
     $("tp").value="";
   };
